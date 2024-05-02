@@ -1,16 +1,15 @@
 package kafka
 
-import "github.com/confluentinc/confluent-kafka-go/kafka"
+import "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 
 type ConsumerConfig struct {
 	BootstrapServers      string
 	DebugLevel            string
 	GroupID               string
-	Topics                string
+	Topics                []string
 	AutoCommitInterval    int
 	ConsumerCount         int
 	PollTimeout           int
-	RouteGroup            string
 	AutoOffsetReset       string
 	PartitionAssignment   string
 	MaxPollIntervalMS     int
@@ -29,6 +28,7 @@ func (c ConsumerConfig) toConfigMap() kafka.ConfigMap {
 		"auto.commit.interval.ms":  5000,
 		"auto.offset.reset":        "latest",
 	}
+
 	if c.AutoOffsetReset != "" {
 		kafkaConfMap["auto.offset.reset"] = c.AutoOffsetReset
 	}
@@ -53,5 +53,3 @@ func (c ConsumerConfig) toConfigMap() kafka.ConfigMap {
 
 	return kafkaConfMap
 }
-
-type StreamConfig = []ConsumerConfig

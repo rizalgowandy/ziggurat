@@ -3,18 +3,13 @@ package rabbitmq
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/gojekfarm/ziggurat/v2"
 
-	"github.com/gojekfarm/ziggurat"
 	"github.com/makasim/amqpextra/publisher"
 	"github.com/streadway/amqp"
 )
 
-//mock the actual implementation
-var publishAMQP = func(p *publisher.Publisher, msg publisher.Message) error {
-	return p.Publish(msg)
-}
-
-func publishInternal(p *publisher.Publisher, queue string, retryCount int, delayExpiration string, event *ziggurat.Event) error {
+func publishInternal(p amqpPublisher, queue string, retryCount int, delayExpiration string, event *ziggurat.Event) error {
 
 	expiration := delayExpiration
 
@@ -22,7 +17,7 @@ func publishInternal(p *publisher.Publisher, queue string, retryCount int, delay
 		event.Metadata = map[string]interface{}{KeyRetryCount: 0}
 	}
 
-	newCount := GetRetryCount(event) + 1
+	newCount := RetryCountFor(event) + 1
 	exchange := fmt.Sprintf("%s_%s", queue, "exchange")
 	routingKey := QueueTypeDelay
 
@@ -49,5 +44,5 @@ func publishInternal(p *publisher.Publisher, queue string, retryCount int, delay
 		},
 	}
 
-	return publishAMQP(p, msg)
+	return p.Publish(msg)
 }

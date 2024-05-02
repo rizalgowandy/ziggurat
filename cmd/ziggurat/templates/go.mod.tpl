@@ -1,7 +1,7 @@
 module {{.AppName}}
 
-go 1.17
+go 1.22
 
 require (
-    github.com/gojekfarm/ziggurat {{.Version}}
+    github.com/gojekfarm/ziggurat/v2 {{.Version}}
 )

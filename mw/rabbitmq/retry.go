@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/gojekfarm/ziggurat/v2"
 	"net/http"
 	"net/url"
 	"sync"
 	"time"
 
-	"github.com/gojekfarm/ziggurat"
-	zl "github.com/gojekfarm/ziggurat/logger"
+	zl "github.com/gojekfarm/ziggurat/v2/logger"
 	"github.com/makasim/amqpextra"
 	"github.com/makasim/amqpextra/logger"
 	"github.com/makasim/amqpextra/publisher"
@@ -148,29 +148,6 @@ func (r *ARetry) Retry(ctx context.Context, event *ziggurat.Event, queueKey stri
 	return r.publish(ctx, event, queueKey)
 }
 
-func (r *ARetry) Wrap(f ziggurat.HandlerFunc, queueKey string) ziggurat.HandlerFunc {
-	hf := func(ctx context.Context, event *ziggurat.Event) error {
-		// start the publishers once only
-		r.once.Do(func() {
-			r.ogLogger.Info("[amqp] init from wrap")
-			err := r.InitPublishers(ctx)
-			if err != nil {
-				panic(fmt.Sprintf("could not start RabbitMQ publishers:%v", err))
-			}
-		})
-		err := f(ctx, event)
-		if err == ziggurat.Retry {
-			pubErr := r.publish(ctx, event, queueKey)
-			r.ogLogger.Error("AR publishInternal error", pubErr)
-			// return the original error
-			return err
-		}
-		// return the original error and not nil
-		return err
-	}
-	return hf
-}
-
 func (r *ARetry) InitPublishers(ctx context.Context) error {
 	dialer, err := newDialer(ctx, r.amqpURLs, r.logger)
 	if err != nil {
@@ -198,7 +175,7 @@ func (r *ARetry) InitPublishers(ctx context.Context) error {
 	return nil
 }
 
-func (r *ARetry) Stream(ctx context.Context, h ziggurat.Handler) error {
+func (r *ARetry) Consume(ctx context.Context, h ziggurat.Handler) error {
 	dialer, err := newDialer(ctx, r.amqpURLs, r.logger)
 	if err != nil {
 		return err
@@ -285,8 +262,6 @@ func (r *ARetry) view(ctx context.Context, qnameWithType string, count int, ack 
 		var ackErr error
 		if ack {
 			ackErr = msg.Ack(true)
-		} else {
-			ackErr = msg.Reject(true)
 		}
 
 		r.ogLogger.Error("", ackErr)

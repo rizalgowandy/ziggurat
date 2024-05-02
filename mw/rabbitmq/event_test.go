@@ -1,9 +1,8 @@
 package rabbitmq
 
 import (
+	"github.com/gojekfarm/ziggurat/v2"
 	"testing"
-
-	"github.com/gojekfarm/ziggurat"
 )
 
 func Test_getRetryCount(t *testing.T) {
@@ -31,7 +30,7 @@ func Test_getRetryCount(t *testing.T) {
 		}}
 	for _, c := range tests {
 		t.Run(c.name, func(t *testing.T) {
-			count := GetRetryCount(c.input)
+			count := RetryCountFor(c.input)
 			if count != c.expected {
 				t.Errorf("expected count to be %d got %d", c.expected, count)
 			}

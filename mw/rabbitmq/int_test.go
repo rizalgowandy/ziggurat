@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/gojekfarm/ziggurat/v2"
+	"github.com/gojekfarm/ziggurat/v2/logger"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/gojekfarm/ziggurat"
 )
 
 func newAutoRetry(qn string, count int, consumerCount int) *ARetry {
@@ -21,6 +21,7 @@ func newAutoRetry(qn string, count int, consumerCount int) *ARetry {
 		}},
 		WithUsername("user"),
 		WithConnectionTimeout(5*time.Second),
+		WithLogger(logger.NewLogger(logger.LevelInfo)),
 		WithPassword("bitnami"))
 	return ar
 }
@@ -71,10 +72,10 @@ func Test_RetryFlow(t *testing.T) {
 			}
 			done := make(chan struct{})
 			go func() {
-				err := ar.Stream(ctx, ar.Wrap(func(ctx context.Context, event *ziggurat.Event) error {
+				err := ar.Consume(ctx, ziggurat.HandlerFunc(func(ctx context.Context, event *ziggurat.Event) {
 					atomic.AddInt32(&callCount, 1)
-					return ziggurat.Retry
-				}, c.QueueName))
+					_ = ar.Retry(ctx, event, c.QueueName)
+				}))
 				if !errors.Is(err, ErrCleanShutdown) {
 					t.Errorf("error running consumers: %v", err)
 				}
@@ -111,6 +112,7 @@ func Test_view(t *testing.T) {
 		viewCount         int
 		expectedViewCount int
 		name              string
+		expectedMessages  []string
 	}
 
 	cases := []test{
@@ -120,6 +122,7 @@ func Test_view(t *testing.T) {
 			publishCount:      5,
 			viewCount:         5,
 			expectedViewCount: 5,
+			expectedMessages:  []string{"bar-0", "bar-1", "bar-2", "bar-3", "bar-4"},
 		},
 		{
 			name:              "read excess number of messages than there are in the queue",
@@ -127,6 +130,7 @@ func Test_view(t *testing.T) {
 			publishCount:      5,
 			viewCount:         10,
 			expectedViewCount: 5,
+			expectedMessages:  []string{"bar-0", "bar-1", "bar-2", "bar-3", "bar-4"},
 		},
 		{
 			name:              "read negative number of messages",
@@ -134,6 +138,7 @@ func Test_view(t *testing.T) {
 			publishCount:      5,
 			viewCount:         -1,
 			expectedViewCount: 0,
+			expectedMessages:  []string{},
 		},
 		{
 			name:              "read zero messages",
@@ -141,6 +146,7 @@ func Test_view(t *testing.T) {
 			viewCount:         0,
 			publishCount:      5,
 			expectedViewCount: 0,
+			expectedMessages:  []string{},
 		}}
 
 	for _, c := range cases {
@@ -160,12 +166,18 @@ func Test_view(t *testing.T) {
 				}
 			}
 			queueName := fmt.Sprintf("%s_%s_%s", c.qname, "dlq", "queue")
-			events, err := ar.view(ctx, queueName, c.viewCount, false)
+			viewEventsOnce, err := ar.view(ctx, queueName, c.viewCount, false)
+			viewEventsTwice, err := ar.view(ctx, queueName, c.viewCount, false)
 			if err != nil {
 				t.Errorf("error viewing messages: %v", err)
 			}
-			if len(events) != c.expectedViewCount {
-				t.Errorf("expected to read %d messages but read %d", c.expectedViewCount, len(events))
+			if len(viewEventsOnce) != c.expectedViewCount {
+				t.Errorf("expected to read %d messages but read %d", c.expectedViewCount, len(viewEventsOnce))
+			}
+			for idx, event := range c.expectedMessages {
+				if string(viewEventsOnce[idx].Value) != event || string(viewEventsTwice[idx].Value) != event {
+					t.Errorf("expected message %s but got %s", event, string(viewEventsOnce[idx].Value))
+				}
 			}
 			err = ar.DeleteQueuesAndExchanges(context.Background(), c.qname)
 			if err != nil {
@@ -265,9 +277,9 @@ func Test_MessageLoss(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		err := ar.Stream(ctx, ar.Wrap(func(ctx context.Context, event *ziggurat.Event) error {
-			return ziggurat.Retry
-		}, qname))
+		err := ar.Consume(ctx, ziggurat.HandlerFunc(func(ctx context.Context, event *ziggurat.Event) {
+			_ = ar.Retry(ctx, event, qname)
+		}))
 		if !errors.Is(err, ErrCleanShutdown) {
 			t.Errorf("exepcted error to be [%v] got [%v]", ErrCleanShutdown, err)
 		}

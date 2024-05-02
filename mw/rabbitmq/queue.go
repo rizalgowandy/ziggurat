@@ -2,8 +2,8 @@ package rabbitmq
 
 import (
 	"fmt"
+	"github.com/gojekfarm/ziggurat/v2"
 
-	"github.com/gojekfarm/ziggurat"
 	"github.com/streadway/amqp"
 )
 
@@ -27,7 +27,7 @@ func createQueuesAndExchanges(ch *amqp.Channel, queueName string, logger ziggura
 	for _, qt := range queueTypes {
 		args := amqp.Table{}
 		logger.Info("creating queue", map[string]interface{}{"queue": queueName, "type": qt})
-		if qt == "delay" {
+		if qt == QueueTypeDelay {
 			args = amqp.Table{
 				"x-dead-letter-exchange":    fmt.Sprintf("%s_%s", queueName, "exchange"),
 				"x-dead-letter-routing-key": QueueTypeInstant,

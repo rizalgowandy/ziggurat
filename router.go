@@ -1,12 +1,10 @@
-package kafka
+package ziggurat
 
 import (
 	"context"
 	"fmt"
 	"regexp"
 	"sort"
-
-	"github.com/gojekfarm/ziggurat"
 )
 
 /*
@@ -18,10 +16,11 @@ routerEntry {
 handlerEntry []string sorted by len of paths
 */
 
-//routerEntry contains the pattern and the path routerEntry
+// routerEntry contains the pattern and the path routerEntry
 type routerEntry struct {
-	handler ziggurat.Handler
+	handler Handler
 	pattern string
+	rgx     *regexp.Regexp
 }
 
 type Router struct {
@@ -29,20 +28,18 @@ type Router struct {
 	es           []routerEntry
 }
 
-//match works by matching the shortest prefix that matches the path
+// match works by matching the shortest prefix that matches the path
 // it returns the matched path and the handler associated with it
-func (r *Router) match(path string) (ziggurat.Handler, string) {
+func (r *Router) match(path string) (Handler, string) {
 	if e, ok := r.handlerEntry[path]; ok {
 		return e.handler, path
 	}
 	for _, e := range r.es {
-		matched, err := regexp.MatchString(e.pattern, path)
-		if err != nil {
-			panic(err)
-		}
+		matched := e.rgx.MatchString(path)
 		if matched {
 			return e.handler, e.pattern
 		}
+
 	}
 	return nil, ""
 }
@@ -60,17 +57,17 @@ func sortAndAppend(s []routerEntry, e routerEntry) []routerEntry {
 	return s
 }
 
-func (r *Router) HandleFunc(pattern string, h func(ctx context.Context, event *ziggurat.Event) error) {
+func (r *Router) HandlerFunc(pattern string, h func(ctx context.Context, event *Event)) {
 	if pattern == "" {
 		panic(fmt.Errorf("kafka router:pattern cannot be [%q]", pattern))
 	}
 	if h == nil {
 		panic("kafka router:handler cannot be <nil>")
 	}
-	r.register(pattern, ziggurat.HandlerFunc(h))
+	r.register(pattern, HandlerFunc(h))
 }
 
-func (r *Router) register(pattern string, h ziggurat.Handler) {
+func (r *Router) register(pattern string, h Handler) {
 	if r.handlerEntry == nil {
 		r.handlerEntry = make(map[string]routerEntry)
 	}
@@ -86,17 +83,43 @@ func (r *Router) register(pattern string, h ziggurat.Handler) {
 		panic(fmt.Sprintf("kafka router:multiple regirstrations for [%s]", pattern))
 	}
 
-	e := routerEntry{handler: h, pattern: pattern}
+	e := routerEntry{handler: h, pattern: pattern, rgx: regexp.MustCompile(pattern)}
 	r.handlerEntry[pattern] = e
 
 	r.es = sortAndAppend(r.es, e)
 }
 
-func (r *Router) Handle(ctx context.Context, event *ziggurat.Event) error {
+func (r *Router) Handle(ctx context.Context, event *Event) {
 	path := event.RoutingPath
 	h, _ := r.match(path)
 	if h != nil {
-		return h.Handle(ctx, event)
+		h.Handle(ctx, event)
 	}
-	return fmt.Errorf("kafka router:no pattern registered for [%s]", path)
+	return
+}
+
+func NewRouter() *Router {
+	return &Router{}
+}
+
+type Middleware func(handler Handler) Handler
+
+var pipe = func(h Handler, fs ...Middleware) Handler {
+	if len(fs) < 1 {
+		return h
+	}
+	last := len(fs) - 1
+	f := func(ctx context.Context, event *Event) {
+		next := h
+		for i := last; i >= 0; i-- {
+			next = fs[i](next)
+		}
+		next.Handle(ctx, event)
+	}
+	return HandlerFunc(f)
+}
+
+// Use takes a ziggurat.Handler and wraps it with Middleware
+func Use(h Handler, fs ...Middleware) Handler {
+	return pipe(h, fs...)
 }

@@ -1,11 +1,9 @@
-package kafka
+package ziggurat
 
 import (
 	"context"
 	"reflect"
 	"testing"
-
-	"github.com/gojekfarm/ziggurat"
 )
 
 func shouldPanic(t *testing.T, f func()) {
@@ -18,43 +16,60 @@ func Test_match(t *testing.T) {
 	tests := []struct {
 		want  string
 		name  string
-		path  string
+		paths []string
 		input []routerEntry
 	}{
 		{
 			name:  "should match the longest prefix without regex",
-			want:  "localhost:9092",
-			path:  "localhost:9092/foo_consumer",
-			input: []routerEntry{{pattern: "localhost:9092", handler: nil}},
+			want:  "foo.id",
+			paths: []string{"foo.id/foo_consumer"},
+			input: []routerEntry{{pattern: "foo.id", handler: nil}},
 		},
 		{
 			name:  "should match when topic regex is provided",
-			want:  "localhost:9092/foo_consumer/.*-log",
-			path:  "localhost:9092/foo_consumer/message-log/0",
-			input: []routerEntry{{pattern: "localhost:9092/foo_consumer/.*-log", handler: nil}},
+			want:  "foo.id/foo_consumer/.*-log",
+			paths: []string{"foo.id/foo_consumer/message-log/0", "foo.id/foo_consumer/app-log/0"},
+			input: []routerEntry{{pattern: "foo.id/foo_consumer/.*-log", handler: nil}},
 		},
 		{
 			name:  "should match exact partition when a certain partition is specified",
 			want:  "",
-			path:  "localhost:9092/foo_consumer/message-log/10",
-			input: []routerEntry{{pattern: "localhost:9092/foo_consumer/message-log/1$", handler: nil}},
+			paths: []string{"foo.id/foo_consumer/message-log/10"},
+			input: []routerEntry{{pattern: "foo.id/foo_consumer/message-log/1$", handler: nil}},
 		},
 		{
-			name: "should match the longest prefix with regex",
-			want: "localhost:9092/foo_consumer/.*-log/\\d+",
-			path: "localhost:9092/foo_consumer/message-log/5",
+			name:  "should match the longest prefix with regex",
+			want:  "foo.id/foo_consumer/.*-log/\\d+",
+			paths: []string{"foo.id/foo_consumer/message-log/5"},
 			input: []routerEntry{
-				{pattern: "localhost:9092/foo_consumer/.*-log/\\d+", handler: nil},
-				{pattern: "localhost:9092/foo_consumer/.*-log", handler: nil},
+				{pattern: "foo.id/foo_consumer/.*-log/\\d+", handler: nil},
+				{pattern: "foo.id/foo_consumer/.*-log", handler: nil},
 			},
 		},
 		{
-			name: "should not match similar consumer group names",
-			want: "",
-			path: "localhost:9092/foo_consumer/",
+			name:  "should not match similar consumer group names",
+			want:  "",
+			paths: []string{"foo.id/foo_consumer/"},
 			input: []routerEntry{
-				{pattern: "localhost:9092/foo/"},
+				{pattern: "foo.id/foo/"},
 			},
+		},
+		{
+			name:  "should not match similar consumer group names",
+			want:  "bar.id/.*",
+			paths: []string{"bar.id/GO_BIRD_COMBO-booking-log/11"},
+			input: []routerEntry{
+				{pattern: "bar.id/.*"},
+			},
+		},
+		{
+			name: "regex test: should match paths ending with even numbers",
+			want: "bar.id/message-log/(2|4|6|8|10)$",
+			input: []routerEntry{
+				{pattern: "bar.id/message-log/(1|3|5|7|11)$"},
+				{pattern: "bar.id/message-log/(2|4|6|8|10)$"},
+			},
+			paths: []string{"bar.id/message-log/10"},
 		},
 	}
 
@@ -69,12 +84,20 @@ func Test_match(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var r Router
-			r.es = test.input
-			r.handlerEntry = esToMap(test.input)
-			_, m := r.match(test.path)
-			if m != test.want {
-				t.Errorf("%s test failed, expected %q got %q", test.name, test.want, m)
+			for _, es := range test.input {
+				r.register(es.pattern, es.handler)
 			}
+			r.handlerEntry = esToMap(test.input)
+			for _, path := range test.paths {
+				t.Logf("matching path:%s\n", path)
+				_, m := r.match(path)
+				t.Logf("match:%s\n", m)
+				if m != test.want {
+					t.Errorf("%s test failed, expected %q got %q", test.name, test.want, m)
+					return
+				}
+			}
+
 		})
 	}
 }
@@ -100,38 +123,38 @@ func Test_sortAndAppend(t *testing.T) {
 
 func Test_register(t *testing.T) {
 	var router Router
-	var h ziggurat.HandlerFunc = func(ctx context.Context, event *ziggurat.Event) error {
-		return nil
+	var h HandlerFunc = func(ctx context.Context, event *Event) {
+
 	}
 	cases := map[string]func(t *testing.T){
 		"should panic on empty pattern": func(t *testing.T) {
 			shouldPanic(t, func() {
-				router.HandleFunc("", h)
+				router.HandlerFunc("", h)
 			})
 		},
 		"should panic on nil handler": func(t *testing.T) {
 			shouldPanic(t, func() {
-				router.HandleFunc("/bar", nil)
+				router.HandlerFunc("/bar", nil)
 			})
 		},
 
 		"should panic on / as the pattern": func(t *testing.T) {
 			shouldPanic(t, func() {
-				router.HandleFunc("/", h)
+				router.HandlerFunc("/", h)
 			})
 		},
 
 		"should not allow multiple registrations of the same pattern": func(t *testing.T) {
 			shouldPanic(t, func() {
-				router.HandleFunc("/bar", h)
-				router.HandleFunc("/bar", h)
+				router.HandlerFunc("/bar", h)
+				router.HandlerFunc("/bar", h)
 			})
 		},
 		"sort and append should append the patterns in increasing order of len(s)": func(t *testing.T) {
 			var router Router
-			router.HandleFunc("/bar/baz", h)
-			router.HandleFunc("/bar", h)
-			router.HandleFunc("/foo/bar/0", h)
+			router.HandlerFunc("/bar/baz", h)
+			router.HandlerFunc("/bar", h)
+			router.HandlerFunc("/foo/bar/0", h)
 			want := []routerEntry{
 				{pattern: "/foo/bar/0", handler: h},
 				{pattern: "/bar/baz", handler: h},

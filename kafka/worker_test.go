@@ -3,95 +3,141 @@ package kafka
 import (
 	"context"
 	"errors"
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/gojekfarm/ziggurat/v2"
+	"github.com/gojekfarm/ziggurat/v2/logger"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/stretchr/testify/mock"
 	"testing"
 	"time"
-
-	"github.com/confluentinc/confluent-kafka-go/kafka"
-	"github.com/gojekfarm/ziggurat"
-	"github.com/gojekfarm/ziggurat/logger"
 )
 
-func TestWorker(t *testing.T) {
-	ogCreateConsumer := createConsumer
-	ogStoreOffsets := storeOffsets
-	ogCloseConsumer := closeConsumer
-	ogPollEvent := pollEvent
-	defer func() {
-		createConsumer = ogCreateConsumer
-		storeOffsets = ogStoreOffsets
-		closeConsumer = ogCloseConsumer
-		pollEvent = ogPollEvent
-	}()
-	createConsumer = createConsumerMock
-	closeConsumer = closeConsumerMock
-	pollEvent = pollEventMock
-	storeOffsets = storeOffsetsMock
-
-	c := createConsumer(&kafka.ConfigMap{}, nil, []string{})
-	called := false
-	h := ziggurat.HandlerFunc(func(ctx context.Context, event *ziggurat.Event) error {
-		called = true
-		return nil
-	})
-	ctx, cfn := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cfn()
-	w := worker{
-		handler:     h,
-		logger:      logger.NOOP,
-		consumer:    c,
-		routeGroup:  "",
-		pollTimeout: 100,
-		id:          "1",
-		killSig:     make(chan struct{}),
-	}
-	w.run(ctx)
-	if !called {
-		t.Error("expected called to be true")
-	}
+type mockHandler struct {
+	mock.Mock
 }
 
-func TestWorker_Kill(t *testing.T) {
-	ogCreateConsumer := createConsumer
-	ogStoreOffsets := storeOffsets
-	ogCloseConsumer := closeConsumer
-	ogPollEvent := pollEvent
-	defer func() {
-		createConsumer = ogCreateConsumer
-		storeOffsets = ogStoreOffsets
-		closeConsumer = ogCloseConsumer
-		pollEvent = ogPollEvent
-	}()
-	createConsumer = createConsumerMock
-	closeConsumer = closeConsumerMock
-	pollEvent = pollEventMock
-	storeOffsets = storeOffsetsMock
+func (mh *mockHandler) Handle(ctx context.Context, event *ziggurat.Event) {
+	return
+}
 
-	c := createConsumer(&kafka.ConfigMap{}, nil, []string{})
+func TestWorker(t *testing.T) {
 
-	w := worker{
-		handler: ziggurat.HandlerFunc(func(ctx context.Context, event *ziggurat.Event) error {
-			return nil
-		}),
-		logger:      logger.NOOP,
-		consumer:    c,
-		routeGroup:  "",
-		pollTimeout: 100,
-		id:          "1",
-		killSig:     make(chan struct{}),
-	}
+	t.Run("worker processes messages successfully", func(t *testing.T) {
 
-	wait := make(chan struct{})
-	go func() {
-		w.run(context.Background())
-		wait <- struct{}{}
-	}()
-	time.AfterFunc(100*time.Millisecond, func() {
-		w.kill()
+		wantEvent := ziggurat.Event{
+			RoutingPath: "foo-group/foo/1",
+			EventType:   "kafka",
+			Value:       make([]byte, 0),
+			Key:         make([]byte, 0),
+			Metadata:    map[string]any{"kafka-partition": 1, "kafka-topic": "foo"},
+		}
+
+		eventMatcher := mock.MatchedBy(func(e *ziggurat.Event) bool {
+			diff := cmp.Diff(&wantEvent, e, cmpopts.IgnoreFields(ziggurat.Event{}, "ReceivedTimestamp"))
+			if diff != "" {
+				t.Logf("(-Want +Got)%s\n", diff)
+				return false
+			}
+			return true
+
+		})
+		mh := mockHandler{}
+		mh.On("Handle", mock.Anything, eventMatcher).Return(nil)
+
+		mc := MockConsumer{}
+		w := worker{
+			handler:     &mh,
+			logger:      logger.NOOP,
+			consumer:    &mc,
+			routeGroup:  "foo-group",
+			pollTimeout: 100,
+			killSig:     make(chan struct{}),
+			id:          "foo-worker",
+		}
+
+		topic := "foo"
+		mc.On("Logs").Return(make(chan kafka.LogEvent))
+		mc.On("Poll", 100).Return(&kafka.Message{
+			TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: 1},
+		})
+		mc.On("Commit").Return([]kafka.TopicPartition{}, nil)
+		mc.On("StoreOffsets", mock.AnythingOfType("[]kafka.TopicPartition")).Return([]kafka.TopicPartition{}, nil)
+		mc.On("Close").Return(nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
+		defer cancel()
+		w.run(ctx)
+		if !errors.Is(w.err, context.DeadlineExceeded) {
+			t.Errorf("expected error to be nil got:%v", w.err)
+			return
+		}
+
 	})
 
-	<-wait
-	killErr := ErrorWorkerKilled{workerID: "1"}
-	if e := w.err; !errors.Is(e, killErr) {
-		t.Errorf("expected error to be [%v] got [%v]", killErr, e)
-	}
+	t.Run("confluent consumer returns a fatal error", func(t *testing.T) {
+		mc := MockConsumer{}
+		w := worker{
+			handler: ziggurat.HandlerFunc(func(ctx context.Context, event *ziggurat.Event) {
+
+			}),
+			logger:      logger.NOOP,
+			consumer:    &mc,
+			routeGroup:  "foo",
+			pollTimeout: 100,
+			killSig:     make(chan struct{}),
+			id:          "foo-worker",
+		}
+
+		mc.On("Logs").Return(make(chan kafka.LogEvent))
+		mc.On("Poll", 100).Return(kafka.NewError(kafka.ErrAllBrokersDown, "fatal error", true))
+		mc.On("Commit").Return([]kafka.TopicPartition{}, nil)
+		mc.On("Close").Return(nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
+		defer cancel()
+		w.run(ctx)
+
+		if errors.Is(w.err, context.DeadlineExceeded) {
+			t.Error("expected a kafka error")
+			return
+		}
+		t.Logf("error:%v", w.err)
+	})
+
+	t.Run("worker kill", func(t *testing.T) {
+		mc := MockConsumer{}
+		w := worker{
+			handler: ziggurat.HandlerFunc(func(ctx context.Context, event *ziggurat.Event) {
+			}),
+			logger:      logger.NOOP,
+			consumer:    &mc,
+			routeGroup:  "foo",
+			pollTimeout: 100,
+			killSig:     make(chan struct{}),
+			id:          "foo-worker",
+		}
+
+		topic := "foo"
+		mc.On("Logs").Return(make(chan kafka.LogEvent))
+		mc.On("Commit").Return([]kafka.TopicPartition{}, nil)
+		mc.On("StoreOffsets", mock.AnythingOfType("[]kafka.TopicPartition")).Return([]kafka.TopicPartition{}, nil)
+		mc.On("Poll", 100).Return(&kafka.Message{
+			TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: 1},
+		})
+		mc.On("Close").Return(nil)
+
+		timer := time.AfterFunc(500*time.Millisecond, func() {
+			w.kill()
+		})
+		defer timer.Stop()
+
+		w.run(context.Background())
+
+		var expectedErr ErrorWorkerKilled
+		if found := errors.As(w.err, &expectedErr); !found {
+			t.Error("expected worker killed error got:", w.err.Error())
+			return
+		}
+
+	})
+
 }

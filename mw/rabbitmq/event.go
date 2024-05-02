@@ -1,12 +1,10 @@
 package rabbitmq
 
-import (
-	"github.com/gojekfarm/ziggurat"
-)
+import "github.com/gojekfarm/ziggurat/v2"
 
 const KeyRetryCount = "rabbitmqAutoRetryCount"
 
-func GetRetryCount(e *ziggurat.Event) int {
+func RetryCountFor(e *ziggurat.Event) int {
 	if e.Metadata == nil {
 		return 0
 	}
